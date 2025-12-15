@@ -448,11 +448,26 @@ fn send_to_appsrc(
     let timestamp = ClockTime::from_useconds(ts.as_micros() as u64);
     let buf = acquire_pooled_buffer(pools, &data, timestamp)?;
 
+    // Proactive backpressure check before pushing
+    let level = appsrc.current_level_bytes();
+    let max = appsrc.max_bytes();
+
+    // If buffer is nearly full, skip this frame to prevent overflow
+    if level >= max * 9 / 10 {
+        log::debug!(
+            "Buffer nearly full on {} ({}/{} bytes), dropping frame to prevent overflow",
+            appsrc.name(),
+            level,
+            max
+        );
+        return Ok(());
+    }
+
     match appsrc.push_buffer(buf) {
         Ok(_) => {}
         Err(gstreamer::FlowError::Flushing) => {
-            log::info!(
-                "Buffer full on {} pausing stream until client consumes frames",
+            log::debug!(
+                "AppSrc {} is in flushing state (pipeline resetting or client disconnecting)",
                 appsrc.name()
             );
             return Ok(());
@@ -460,9 +475,7 @@ fn send_to_appsrc(
         Err(e) => return Err(anyhow::anyhow!("Error in streaming: {e:?}")),
     }
 
-    // Backpressure-Logic
-    let level = appsrc.current_level_bytes();
-    let max = appsrc.max_bytes();
+    // Backpressure-Logic: Adjust state based on buffer fill level
     if level >= max * 2 / 3 && matches!(appsrc.current_state(), gstreamer::State::Paused) {
         let _ = appsrc.set_state(gstreamer::State::Playing);
     } else if level <= max / 3 && matches!(appsrc.current_state(), gstreamer::State::Playing) {
@@ -584,6 +597,10 @@ fn build_h264(bin: &Element, stream_config: &StreamConfig) -> Result<AppSrc> {
         .map_err(|_| anyhow!("Media source's element should be a bin"))?;
 
     let payload = make_element("rtph264pay", "pay0")?;
+    // Configure payload for better timing and client compatibility
+    payload.set_property("config-interval", -1i32); // Send SPS/PPS with every IDR frame
+    payload.set_property_from_str("aggregate-mode", "zero-latency");
+
     bin.add_many([&payload])?;
     Element::link_many([&linked.output, &payload])?;
     Ok(linked.appsrc)
@@ -635,6 +652,10 @@ fn build_h265(bin: &Element, stream_config: &StreamConfig) -> Result<AppSrc> {
         .map_err(|_| anyhow!("Media source's element should be a bin"))?;
 
     let payload = make_element("rtph265pay", "pay0")?;
+    // Configure payload for better timing and client compatibility
+    payload.set_property("config-interval", -1i32); // Send VPS/SPS/PPS with every IDR frame
+    payload.set_property_from_str("aggregate-mode", "zero-latency");
+
     bin.add_many([&payload])?;
     Element::link_many([&linked.output, &payload])?;
     Ok(linked.appsrc)
