@@ -338,11 +338,32 @@ fn send_to_sources(
             }
             *aud_ts += duration;
         }
-        BcMedia::Iframe(BcMediaIframe { data, .. })
-        | BcMedia::Pframe(BcMediaPframe { data, .. }) => {
+        BcMedia::Iframe(BcMediaIframe { data, .. }) => {
             if let Some(vid_src) = vid_src.as_ref() {
-                log::trace!("Sending VID: {:?}", Duration::from_micros(*vid_ts as u64));
+                log::trace!("Sending I-frame: {:?}", Duration::from_micros(*vid_ts as u64));
                 send_to_appsrc(vid_src, data, Duration::from_micros(*vid_ts as u64), pools)?;
+            }
+            const MICROSECONDS: u32 = 1000000;
+            *vid_ts += MICROSECONDS / stream_config.fps;
+        }
+        BcMedia::Pframe(BcMediaPframe { data, .. }) => {
+            if let Some(vid_src) = vid_src.as_ref() {
+                // Intelligent frame dropping: drop P-frames when buffer is getting full
+                // to prioritize I-frames (keyframes) which can restart the stream
+                let level = vid_src.current_level_bytes();
+                let max = vid_src.max_bytes();
+
+                if level >= max * 80 / 100 {
+                    log::trace!(
+                        "Dropping P-frame due to buffer pressure ({}/{} bytes, {}%)",
+                        level,
+                        max,
+                        level * 100 / max
+                    );
+                } else {
+                    log::trace!("Sending P-frame: {:?}", Duration::from_micros(*vid_ts as u64));
+                    send_to_appsrc(vid_src, data, Duration::from_micros(*vid_ts as u64), pools)?;
+                }
             }
             const MICROSECONDS: u32 = 1000000;
             *vid_ts += MICROSECONDS / stream_config.fps;
@@ -453,7 +474,8 @@ fn send_to_appsrc(
     let max = appsrc.max_bytes();
 
     // If buffer is nearly full, skip this frame to prevent overflow
-    if level >= max * 9 / 10 {
+    // Using 95% threshold now that buffer is larger (was 90%)
+    if level >= max * 95 / 100 {
         log::debug!(
             "Buffer nearly full on {} ({}/{} bytes), dropping frame to prevent overflow",
             appsrc.name(),
@@ -575,6 +597,8 @@ fn pipe_h264(bin: &Element, stream_config: &StreamConfig) -> Result<Linked> {
     let queue = make_queue("source_queue", buffer_size)?;
     let parser = make_element("h264parse", "parser")?;
     parser.set_property("disable-passthrough", true);
+    // Tell parser to be more aggressive about fixing stream errors
+    parser.set_property("config-interval", -1i32); // Force SPS/PPS insertion at parser level
     // let stamper = make_element("h264timestamper", "stamper")?;
 
     bin.add_many([&source, &queue, &parser])?;
@@ -631,6 +655,8 @@ fn pipe_h265(bin: &Element, stream_config: &StreamConfig) -> Result<Linked> {
     let queue = make_queue("source_queue", buffer_size)?;
     let parser = make_element("h265parse", "parser")?;
     parser.set_property("disable-passthrough", true);
+    // Tell parser to be more aggressive about fixing stream errors
+    parser.set_property("config-interval", -1i32); // Force VPS/SPS/PPS insertion at parser level
     // let stamper = make_element("h265timestamper", "stamper")?;
 
     bin.add_many([&source, &queue, &parser])?;
@@ -1009,6 +1035,8 @@ fn make_queue(name: &str, buffer_size: u32) -> AnyResult<Element> {
 }
 
 fn buffer_size(bitrate: u32) -> u32 {
-    // 0.1 seconds (according to bitrate) or 4kb what ever is larger
-    std::cmp::max(bitrate * 2 / 8u32, 4u32 * 1024u32)
+    // Increased from 2 to 10 to handle keyframe bursts
+    // This gives ~1 second of buffering instead of 0.25 seconds
+    // Prevents dropped frames during high-motion scenes with large keyframes
+    std::cmp::max(bitrate * 10 / 8u32, 4u32 * 1024u32)
 }
