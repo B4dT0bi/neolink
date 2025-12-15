@@ -27,7 +27,7 @@ pub enum Error {
     TimeTryFrom(#[from] time::error::TryFromParsed),
 
     /// Raised when a Bc reply was not understood
-    #[error("Communication error")]
+    #[error("Communication error: {why}. Reply: {reply:?}")]
     UnintelligibleReply {
         /// The Bc packet that was not understood
         reply: std::sync::Arc<Box<Bc>>,
@@ -36,7 +36,7 @@ pub enum Error {
     },
 
     /// Raised when a BcXml reply was not understood
-    #[error("Communication error")]
+    #[error("Communication error: {why}. Reply: {reply:?}")]
     UnintelligibleXml {
         /// The Bc packet that was not understood
         reply: std::sync::Arc<Box<BcXml>>,
