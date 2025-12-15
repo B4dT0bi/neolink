@@ -261,20 +261,57 @@ pub(super) async fn make_factory(
                             }
 
                             log::trace!("{name}::{stream}: Sending new frames");
-                            while let Some(data) = media_rx.blocking_recv() {
-                                let r = send_to_sources(
-                                    data,
-                                    &mut pools,
-                                    &vid_src,
-                                    &aud_src,
-                                    &mut vid_ts,
-                                    &mut aud_ts,
-                                    &stream_config,
-                                );
-                                if let Err(r) = &r {
-                                    log::info!("Failed to send to source: {r:?}");
+                            let mut burst_counter = 0u32;
+                            loop {
+                                // Use try_recv to drain channel without blocking
+                                // This prevents blocking when channel is full and allows frame dropping
+                                match media_rx.try_recv() {
+                                    Ok(data) => {
+                                        burst_counter += 1;
+
+                                        // Detect backpressure: if we're receiving frames rapidly without blocking,
+                                        // the channel is likely backed up
+                                        let in_backpressure = burst_counter > 50;
+
+                                        // Drop P-frames during backpressure to keep channel draining
+                                        let should_drop = in_backpressure
+                                            && matches!(
+                                                data,
+                                                neolink_core::bcmedia::model::BcMedia::Pframe(_)
+                                            );
+
+                                        if should_drop {
+                                            log::debug!(
+                                                "Dropping P-frame due to channel backpressure (burst: {})",
+                                                burst_counter
+                                            );
+                                            continue;
+                                        }
+
+                                        let r = send_to_sources(
+                                            data,
+                                            &mut pools,
+                                            &vid_src,
+                                            &aud_src,
+                                            &mut vid_ts,
+                                            &mut aud_ts,
+                                            &stream_config,
+                                        );
+                                        if let Err(r) = &r {
+                                            log::info!("Failed to send to source: {r:?}");
+                                        }
+                                        r?;
+                                    }
+                                    Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                                        // No frames available right now - reset burst counter and wait
+                                        burst_counter = 0;
+                                        std::thread::sleep(std::time::Duration::from_millis(1));
+                                    }
+                                    Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                                        // Channel closed, exit loop
+                                        break;
+                                    }
                                 }
-                                r?;
                             }
                             log::trace!("All media recieved");
                             AnyResult::Ok(())
