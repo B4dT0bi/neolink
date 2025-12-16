@@ -249,7 +249,7 @@ pub(super) async fn make_factory(
 
                             log::trace!("{name}::{stream}: Sending buffered frames");
                             for buffered in buffer.drain(..) {
-                                send_to_sources(
+                                if let Err(e) = send_to_sources(
                                     buffered,
                                     &mut pools,
                                     &vid_src,
@@ -257,7 +257,17 @@ pub(super) async fn make_factory(
                                     &mut vid_ts,
                                     &mut aud_ts,
                                     &stream_config,
-                                )?;
+                                ) {
+                                    // AppSrc closed during buffered frame send means client disconnected
+                                    if e.to_string().contains("App source is closed")
+                                        || e.to_string().contains("App source is not linked")
+                                    {
+                                        log::debug!("Client pipeline closed during buffer drain: {e:?}");
+                                        return AnyResult::Ok(()); // Exit gracefully
+                                    }
+                                    // Unexpected error
+                                    return Err(e);
+                                }
                             }
 
                             log::trace!("{name}::{stream}: Sending new frames");
@@ -297,10 +307,19 @@ pub(super) async fn make_factory(
                                             &mut aud_ts,
                                             &stream_config,
                                         );
-                                        if let Err(r) = &r {
-                                            log::info!("Failed to send to source: {r:?}");
+                                        if let Err(e) = r {
+                                            // AppSrc closed means client disconnected or pipeline torn down
+                                            // This is expected during reconnection or client disconnect
+                                            if e.to_string().contains("App source is closed")
+                                                || e.to_string().contains("App source is not linked")
+                                            {
+                                                log::debug!("Client pipeline closed: {e:?}");
+                                                break; // Exit gracefully, don't propagate error
+                                            }
+                                            // Other errors are unexpected and should propagate
+                                            log::warn!("Failed to send to source: {e:?}");
+                                            return Err(e);
                                         }
-                                        r?;
                                     }
                                     Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
                                         // No frames available right now - reset burst counter and wait

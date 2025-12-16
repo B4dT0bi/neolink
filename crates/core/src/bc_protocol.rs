@@ -239,9 +239,16 @@ impl BcCamera {
                         if retry >= max_retry && max_retry > 0 {
                             return Err(Error::DiscoveryTimeout);
                         }
-                        log::info!("{}: Registration with reolink servers failed. Retrying: {}/{}", options.name, retry + 1, if max_retry > 0 {format!("{}", max_retry)} else {"infinite".to_string()});
+                        // Exponential backoff: 1s, 2s, 4s, 8s, 16s, 32s, then cap at 60s
+                        let backoff_secs = std::cmp::min(1u64 << retry, 60);
+                        log::info!("{}: Registration with reolink servers failed. Retrying in {}s: {}/{}",
+                            options.name,
+                            backoff_secs,
+                            retry + 1,
+                            if max_retry > 0 {format!("{}", max_retry)} else {"infinite".to_string()}
+                        );
                         retry += 1;
-                        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                        tokio::time::sleep(tokio::time::Duration::from_secs(backoff_secs)).await;
                         // New discovery to get new client IDs
                         discovery = Discovery::new().await?;
                     };
