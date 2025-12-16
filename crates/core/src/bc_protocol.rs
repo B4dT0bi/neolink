@@ -193,11 +193,11 @@ impl BcCamera {
             let (allow_local, allow_remote, allow_map, allow_relay) = match options.discovery {
                 DiscoveryMethods::None => (false, false, false, false),
                 DiscoveryMethods::Local => (true, false, false, false),
-                DiscoveryMethods::Remote => (true, true, false, false),
-                DiscoveryMethods::Map => (true, true, true, false),
-                DiscoveryMethods::Relay => (true, true, true, true),
+                DiscoveryMethods::Remote => (false, true, false, false),
+                DiscoveryMethods::Map => (false, false, true, false),
+                DiscoveryMethods::Relay => (false, false, false, true),
                 DiscoveryMethods::Cellular => (false, false, true, true),
-                DiscoveryMethods::Debug => (false, false, true, false),
+                DiscoveryMethods::Debug => (true, true, true, true),
             };
 
             let res = tokio::select! {
