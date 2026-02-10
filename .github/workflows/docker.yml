@@ -8,7 +8,7 @@ on:
 permissions:
   contents: read
   packages: write
-  id-token: write   # für provenance/attestations
+  id-token: write
 
 jobs:
   build:
@@ -18,27 +18,24 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Repo/Owner für Docker-Tags MUSS lowercase sein
       - name: Set image name (lowercase)
         run: |
           echo "IMAGE=ghcr.io/$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')/neolink" >> $GITHUB_ENV
 
-      # Optional: nur nötig, wenn du wirklich multi-arch (z.B. arm64) baust.
-      # Für nur linux/amd64 kannst du diesen Schritt weglassen.
+      # Optional: nur nötig bei multi-arch (z.B. arm64). Für nur amd64 kannst du diesen Schritt entfernen.
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3 :contentReference[oaicite:2]{index=2}
+        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3 :contentReference[oaicite:3]{index=3}
+        uses: docker/setup-buildx-action@v3
 
       - name: Login to GHCR
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }} :contentReference[oaicite:4]{index=4}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Erzeugt Tags/Labels automatisch aus dem Git-Tag (semver)
       - name: Docker metadata
         id: meta
         uses: docker/metadata-action@v5
@@ -49,25 +46,15 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest
-          labels: |
-            org.opencontainers.image.source=${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
 
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
-
-          # Wenn du wirklich multi-arch willst: "linux/amd64,linux/arm64"
           platforms: linux/amd64
-
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-
-          # Schnellere Builds via GitHub Actions Cache
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
-          # Supply-chain Attestation (Provenance)
           provenance: mode=max
